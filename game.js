@@ -55,6 +55,7 @@ const STORAGE_KEYS = {
   scores: "bungeoppang.scores.v1",
 };
 const CLOUD_SCORE_LIMIT = 20;
+const GAME_OVER_REPUTATION = 20;
 
 let audioContext;
 let last = performance.now();
@@ -72,7 +73,11 @@ const state = {
   bestCombo: 0,
   made: 0,
   stock: 0,
+  badStock: 0,
   served: 0,
+  elapsed: 0,
+  rushT: 0,
+  nextRush: 34,
   customer: null,
   customerWait: 0.8,
   fire: 0.03,
@@ -114,7 +119,11 @@ function reset() {
     bestCombo: 0,
     made: 0,
     stock: 0,
+    badStock: 0,
     served: 0,
+    elapsed: 0,
+    rushT: 0,
+    nextRush: 34,
     customer: null,
     customerWait: 0.8,
     fire: 0.03,
@@ -131,6 +140,11 @@ function reset() {
 
 function update(dt) {
   if (!gameRunning || result) return;
+
+  state.elapsed += dt;
+  state.rushT = Math.max(0, state.rushT - dt);
+  state.nextRush -= dt;
+  if (state.nextRush <= 0) triggerRush();
 
   const heatMul = 0.06 + Math.pow(state.fire, 1.18) * 0.64;
   state.pumpGrace = Math.max(0, state.pumpGrace - dt);
@@ -169,56 +183,85 @@ function updateCustomer(dt) {
   state.customer.bounce += dt;
   state.customer.buyCooldown = Math.max(0, state.customer.buyCooldown - dt);
 
-  if (state.stock > 0 && state.customer.buyCooldown <= 0) {
+  if (totalStock() > 0 && state.customer.buyCooldown <= 0) {
     sellFish();
     return;
   }
 
-  if (state.stock <= 0) {
+  if (totalStock() <= 0) {
     state.customer.grumble -= dt;
     if (state.customer.patience < state.customer.maxPatience * 0.68 && state.customer.grumble <= 0) {
-      const lines = ["빨리줘!", "아직이야?", "배고파!", "타는거아냐?"];
+      const lines = ["빨리줘!", "아직이야?", "배고파!", "타는거아냐?", "장사해?"];
       state.message = lines[Math.floor(Math.random() * lines.length)];
       state.messageT = 0.55;
-      state.customer.grumble = 1.7;
+      state.customer.grumble = Math.max(0.85, 1.7 - difficultyLevel() * 0.08);
       shake = 2;
       beep("bad");
     }
   }
 
   if (state.customer.patience <= 0) {
-    const loss = 22 + state.customer.want * 7;
+    const loss = 22 + state.customer.want * 7 + difficultyLevel() * 2 + (state.rushT > 0 ? 6 : 0);
     state.life = Math.max(0, state.life - loss);
     state.combo = 0;
     state.score = Math.max(0, state.score - 70);
     state.message = "손님감";
     state.messageT = 0.6;
     state.customer = null;
-    state.customerWait = 1.3;
+    state.customerWait = customerDelay();
     shake = 4;
     beep("bad");
-    if (state.life <= 0) {
-      finishGame();
-    }
+    checkReputationGameOver();
   }
 }
 
 function spawnCustomer() {
   const base = CUSTOMERS[Math.floor(Math.random() * CUSTOMERS.length)];
-  const need = 1 + Math.floor(Math.random() * 3);
+  const level = difficultyLevel();
+  const maxNeed = Math.min(6, 3 + Math.floor(level / 2));
+  let need = 1 + Math.floor(Math.random() * maxNeed);
+  if (state.rushT > 0 && Math.random() < 0.72) need = Math.min(6, need + 1);
+  const patience = Math.max(6.2, 14 + need * 2.75 - level * 0.86 - (state.rushT > 0 ? 2.2 : 0));
   state.customer = {
     ...base,
     need,
     want: need,
-    patience: 13 + need * 3,
-    maxPatience: 13 + need * 3,
+    patience,
+    maxPatience: patience,
     bounce: 0,
-    buyCooldown: 0.3,
-    grumble: 2.4,
+    buyCooldown: Math.max(0.12, 0.3 - level * 0.015),
+    grumble: Math.max(1.0, 2.4 - level * 0.1),
   };
   state.message = `${need}개`;
   state.messageT = 0.5;
   beep("start");
+}
+
+function difficultyLevel() {
+  return Math.min(12, Math.floor(state.served / 5) + Math.floor(state.elapsed / 42));
+}
+
+function customerDelay() {
+  const level = difficultyLevel();
+  const rushCut = state.rushT > 0 ? 0.48 : 0;
+  const delay = 0.9 + Math.random() * 1.0 - level * 0.07 - rushCut;
+  return Math.max(0.16, delay);
+}
+
+function triggerRush() {
+  const level = difficultyLevel();
+  state.rushT = Math.min(15, 8 + level * 0.55);
+  state.nextRush = Math.max(16, 38 - level * 1.6 + Math.random() * 8);
+  state.customerWait = Math.min(state.customerWait, 0.25);
+  state.message = "러시!";
+  state.messageT = 0.85;
+  shake = 5;
+  popText("러시!", 165, 218, "#ff2d1f");
+  beep("boost");
+}
+
+function totalStock() {
+  return state.stock + state.badStock;
 }
 
 function pumpFire() {
@@ -253,7 +296,7 @@ function pressMold(index) {
   }
 
   if (mold.phase === "batter") {
-    if (mold.t < 0.38) return bad(mold, "덜익음", cx, cy);
+    if (mold.t < 0.38) return badProduct(mold, "덜익음", cx, cy);
     if (mold.t > 1.28) return burn(mold, "늦음!");
     const perfect = mold.t > 0.74 && mold.t < 1.02;
     mold.phase = "flipped";
@@ -271,7 +314,7 @@ function pressMold(index) {
   }
 
   if (mold.phase === "flipped") {
-    if (mold.t < 0.5) return bad(mold, "물렁", cx, cy);
+    if (mold.t < 0.5) return badProduct(mold, "물렁", cx, cy);
     if (mold.t > 1.24) return burn(mold, "탐!");
     const perfect = mold.t > 0.86 && mold.t < 1.1;
     const count = perfect ? 2 : 1;
@@ -289,17 +332,18 @@ function pressMold(index) {
   }
 
   if (mold.phase === "burnt") {
-    Object.assign(mold, makeMold(index));
-    state.combo = 0;
-    state.message = "버림";
-    state.messageT = 0.35;
-    popText("퍽", cx, cy, "#5c3d2e");
-    beep("trash");
+    badProduct(mold, "탄거", cx, cy);
   }
 }
 
 function sellFish() {
-  if (!gameRunning || !state.customer || state.stock <= 0) return;
+  if (!gameRunning || !state.customer || totalStock() <= 0) return;
+
+  const badSale = state.badStock > 0 && (state.stock <= 0 || Math.random() < 0.45);
+  if (badSale) {
+    sellBadFish();
+    return;
+  }
 
   state.stock -= 1;
   state.customer.need -= 1;
@@ -319,11 +363,38 @@ function sellFish() {
     state.message = "판매!";
     state.messageT = 0.55;
     state.customer = null;
-    state.customerWait = 0.8 + Math.random() * 1.2;
+    state.customerWait = customerDelay();
     beep("perfect");
   } else {
     state.message = `${state.customer.need}개더`;
     state.messageT = 0.45;
+  }
+}
+
+function sellBadFish() {
+  if (!state.customer || state.badStock <= 0) return;
+  state.badStock -= 1;
+  const lines = ["이게뭐야!", "탄거잖아!", "덜익었잖아!", "장난해?"];
+  const loss = 16 + state.customer.want * 5 + difficultyLevel() * 2 + (state.rushT > 0 ? 5 : 0);
+  state.life = Math.max(0, state.life - loss);
+  state.score = Math.max(0, state.score - 120);
+  state.combo = 0;
+  state.message = lines[Math.floor(Math.random() * lines.length)];
+  state.messageT = 0.72;
+  popText("-평판", 252, 208, "#ff2d1f");
+  state.customer = null;
+  state.customerWait = Math.max(0.12, customerDelay() * 0.72);
+  shake = 6;
+  beep("bad");
+  checkReputationGameOver();
+}
+
+function checkReputationGameOver() {
+  if (state.life <= GAME_OVER_REPUTATION) {
+    state.life = Math.max(0, state.life);
+    state.message = "평판바닥";
+    state.messageT = 0.7;
+    finishGame();
   }
 }
 
@@ -359,6 +430,19 @@ function bad(mold, label, x, y) {
   shake = 5;
   popText(label, x, y, "#ff4a4a");
   beep("bad");
+}
+
+function badProduct(mold, label, x, y) {
+  Object.assign(mold, makeMold(mold.index));
+  state.badStock += 1;
+  state.made += 1;
+  state.combo = 0;
+  state.score = Math.max(0, state.score - 24);
+  state.message = label;
+  state.messageT = 0.45;
+  shake = 4;
+  popText("불량+1", x, y, "#ff4a4a");
+  beep("trash");
 }
 
 function burn(mold, label) {
@@ -424,7 +508,14 @@ function drawTop() {
   drawLifeGauge(286, 166);
   drawBomb(34, 123);
   text(`COMBO ${state.combo}`, 22, 196, "#ffffff", 17, "bold", "#0a3d82");
+  drawDifficultyBadge();
   drawCustomerOrder();
+}
+
+function drawDifficultyBadge() {
+  const label = state.rushT > 0 ? "RUSH!" : `LV ${difficultyLevel() + 1}`;
+  const color = state.rushT > 0 ? "#ff2d1f" : "#fff438";
+  text(label, 24, 218, color, 17, "bold", "#0a3d82");
 }
 
 function drawLifeGauge(x, y) {
@@ -517,11 +608,15 @@ function drawBottom() {
   lineRect(PUMP_BUTTON.x, PUMP_BUTTON.y + down, PUMP_BUTTON.w, PUMP_BUTTON.h, state.fire > 0.6 ? "#ff3a25" : "#fff438", 3);
   text("펌핑!", PUMP_BUTTON.x + 16, PUMP_BUTTON.y + 33 + down, "#fff438", 23, "bold");
   text("화력증가!", PUMP_BUTTON.x + 101, PUMP_BUTTON.y + 34 + down, "#ff2d1f", 27, "bold", "#fff438");
-  for (let i = 0; i < Math.min(10, state.stock); i += 1) {
-    drawTinyFish(18 + i * 18, 784, "#ffc928");
+  for (let i = 0; i < Math.min(7, state.stock); i += 1) {
+    drawTinyFish(16 + i * 15, 786, "#ffc928");
   }
-  text(`재고 ${state.stock}`, 205, 800, "#ffffff", 19, "bold");
-  text(`판매 ${state.served}`, 292, 800, "#fff438", 18, "bold");
+  for (let i = 0; i < Math.min(5, state.badStock); i += 1) {
+    drawTinyFish(16 + i * 15, 817, "#292929");
+  }
+  text(`정상 ${state.stock}`, 120, 796, "#ffffff", 17, "bold");
+  text(`불량 ${state.badStock}`, 120, 825, "#ff6b4a", 17, "bold", "#141414");
+  text(`판매 ${state.served}`, 292, 806, "#fff438", 18, "bold");
 }
 
 function drawBoost() {
@@ -1079,7 +1174,7 @@ async function showScores() {
 }
 
 function showHowTo() {
-  menuInfo.textContent = "철판 칸 터치: 반죽 > 뒤집기 > 꺼내기\n펌핑 버튼: 화력 증가\n재고가 있으면 손님이 자동으로 사가고, 손님을 놓치면 평판이 깎여.";
+  menuInfo.textContent = "철판 칸 터치: 반죽 > 뒤집기 > 꺼내기\n펌핑 버튼: 화력 증가\n시간제한은 없고 손님은 점점 몰려와. 불량이 섞이고 평판 20 이하가 되면 게임오버.";
 }
 
 function saveLocalScore(record) {
