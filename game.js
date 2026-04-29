@@ -54,6 +54,7 @@ const STORAGE_KEYS = {
   profile: "bungeoppang.profile.v1",
   scores: "bungeoppang.scores.v1",
 };
+const CLOUD_SCORE_LIMIT = 20;
 
 let audioContext;
 let last = performance.now();
@@ -61,6 +62,7 @@ let shake = 0;
 let result = false;
 let gameRunning = false;
 let finalSaved = false;
+let cloudScoresCache = [];
 const profile = loadProfile();
 
 const state = {
@@ -340,12 +342,12 @@ function finishGame() {
     bestCombo: state.bestCombo,
     createdAt: new Date().toISOString(),
   };
-  const scores = loadScores();
-  scores.push(record);
-  scores.sort((a, b) => b.score - a.score);
-  localStorage.setItem(STORAGE_KEYS.scores, JSON.stringify(scores.slice(0, 20)));
+  saveLocalScore(record);
   beep("end");
-  showMenu("result", record);
+  showMenu("result", record, {
+    cloudStatus: cloudApiEnabled() ? "온라인 랭킹 저장 중..." : "로컬 저장 완료",
+  });
+  syncCloudScore(record);
 }
 
 function bad(mold, label, x, y) {
@@ -1025,11 +1027,12 @@ function savePlayerName(showMessage) {
   }
 }
 
-function showMenu(mode = "home", record = null) {
+function showMenu(mode = "home", record = null, detail = {}) {
   playerNameInput.value = profile.name || "";
   menuOverlay.classList.remove("hidden");
   if (mode === "result" && record) {
-    menuInfo.textContent = `기록 저장 완료\n${record.name} / ${scoreText(record.score)}점\n구운 수 ${record.made}개, 판매 ${record.served}개, 최고콤보 ${record.bestCombo}`;
+    const cloudStatus = detail.cloudStatus ? `\n${detail.cloudStatus}` : "";
+    menuInfo.textContent = `기록 저장 완료${cloudStatus}\n${record.name} / ${scoreText(record.score)}점\n구운 수 ${record.made}개, 판매 ${record.served}개, 최고콤보 ${record.bestCombo}`;
     startButton.textContent = "다시 장사하기";
     return;
   }
@@ -1042,23 +1045,89 @@ function showMenu(mode = "home", record = null) {
     showHowTo();
     return;
   }
-  menuInfo.textContent = `기기 저장 ID: ${profile.deviceId.slice(0, 8)}\n로그인 없이 이 브라우저에 이름과 기록을 저장해.`;
+  menuInfo.textContent = `기기 저장 ID: ${profile.deviceId.slice(0, 8)}\n로그인 없이 이름을 쓰고 플레이해. 배포 URL에서는 온라인 랭킹도 같이 저장돼.`;
 }
 
-function showScores() {
-  const scores = loadScores();
-  if (!scores.length) {
-    menuInfo.textContent = "아직 저장된 기록이 없어.\n한 판 굽고 게임오버가 되면 자동 저장돼.";
+async function showScores() {
+  const localScores = loadScores();
+  const localLines = formatScoreLines(localScores, 3);
+
+  if (!cloudApiEnabled()) {
+    menuInfo.textContent = localLines.length
+      ? ["내 기기 기록", ...localLines, "온라인 랭킹은 배포 URL에서 켜져."].join("\n")
+      : "아직 저장된 기록이 없어.\n한 판 굽고 게임오버가 되면 자동 저장돼.";
     return;
   }
-  menuInfo.textContent = scores
-    .slice(0, 5)
-    .map((score, index) => `${index + 1}. ${score.name} ${scoreText(score.score)}점 / 판매 ${score.served} / 콤보 ${score.bestCombo}`)
-    .join("\n");
+
+  menuInfo.textContent = "온라인 랭킹 불러오는 중...\n잠깐만.";
+  try {
+    cloudScoresCache = await fetchCloudScores();
+    const cloudLines = formatScoreLines(cloudScoresCache, 5);
+    menuInfo.textContent = [
+      "온라인 TOP",
+      ...(cloudLines.length ? cloudLines : ["아직 온라인 기록이 없어."]),
+      "",
+      "내 기기",
+      ...(localLines.length ? localLines.slice(0, 2) : ["저장된 기록 없음"]),
+    ].join("\n");
+  } catch (error) {
+    console.warn("Cloud score load failed", error);
+    menuInfo.textContent = localLines.length
+      ? ["온라인 랭킹 연결 전이야.", "내 기기 기록", ...localLines].join("\n")
+      : "온라인 랭킹 연결 전이야.\n아직 저장된 기록도 없어.";
+  }
 }
 
 function showHowTo() {
   menuInfo.textContent = "철판 칸 터치: 반죽 > 뒤집기 > 꺼내기\n펌핑 버튼: 화력 증가\n재고가 있으면 손님이 자동으로 사가고, 손님을 놓치면 평판이 깎여.";
+}
+
+function saveLocalScore(record) {
+  const scores = loadScores();
+  scores.push(record);
+  scores.sort((a, b) => b.score - a.score || b.bestCombo - a.bestCombo || b.served - a.served);
+  localStorage.setItem(STORAGE_KEYS.scores, JSON.stringify(scores.slice(0, CLOUD_SCORE_LIMIT)));
+}
+
+async function syncCloudScore(record) {
+  if (!cloudApiEnabled()) return;
+
+  try {
+    const response = await fetch("/api/scores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.saved) throw new Error(data.error || "Cloud score save failed");
+    cloudScoresCache = Array.isArray(data.scores) ? data.scores : [];
+    if (result && !gameRunning) {
+      showMenu("result", record, { cloudStatus: "온라인 랭킹 저장 완료" });
+    }
+  } catch (error) {
+    console.warn("Cloud score save failed", error);
+    if (result && !gameRunning) {
+      showMenu("result", record, { cloudStatus: "로컬 저장 완료 / 온라인 연결 대기" });
+    }
+  }
+}
+
+async function fetchCloudScores() {
+  const response = await fetch("/api/scores", { headers: { Accept: "application/json" } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Cloud score load failed");
+  return Array.isArray(data.scores) ? data.scores : [];
+}
+
+function cloudApiEnabled() {
+  return location.protocol === "http:" || location.protocol === "https:";
+}
+
+function formatScoreLines(scores, limit) {
+  return scores.slice(0, limit).map((score, index) => {
+    const name = score.name || "무명";
+    return `${index + 1}. ${name} ${scoreText(score.score)}점 / 판매 ${score.served} / 콤보 ${score.bestCombo}`;
+  });
 }
 
 function unlockAudio() {
