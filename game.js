@@ -73,6 +73,7 @@ const state = {
   bestCombo: 0,
   made: 0,
   stock: 0,
+  goldStock: 0,
   badStock: 0,
   served: 0,
   elapsed: 0,
@@ -119,6 +120,7 @@ function reset() {
     bestCombo: 0,
     made: 0,
     stock: 0,
+    goldStock: 0,
     badStock: 0,
     served: 0,
     elapsed: 0,
@@ -231,6 +233,8 @@ function spawnCustomer() {
     bounce: 0,
     buyCooldown: Math.max(0.12, 0.3 - level * 0.015),
     grumble: Math.max(1.0, 2.4 - level * 0.1),
+    goldSold: 0,
+    goodSold: 0,
   };
   state.message = `${need}개`;
   state.messageT = 0.5;
@@ -261,7 +265,7 @@ function triggerRush() {
 }
 
 function totalStock() {
-  return state.stock + state.badStock;
+  return state.stock + state.goldStock + state.badStock;
 }
 
 function pumpFire() {
@@ -322,7 +326,12 @@ function pressMold(index) {
     state.combo += perfect ? 2 : 1;
     state.bestCombo = Math.max(state.bestCombo, state.combo);
     state.made += count;
-    state.stock += count;
+    if (perfect) {
+      state.goldStock += 1;
+      state.stock += 1;
+    } else {
+      state.stock += 1;
+    }
     state.message = perfect ? "황금!" : "완성";
     state.messageT = 0.55;
     popText(`재고+${count}`, cx, cy, perfect ? "#ffec27" : "#ffffff");
@@ -339,35 +348,55 @@ function pressMold(index) {
 function sellFish() {
   if (!gameRunning || !state.customer || totalStock() <= 0) return;
 
-  const badSale = state.badStock > 0 && (state.stock <= 0 || Math.random() < 0.45);
+  const goodStock = state.stock + state.goldStock;
+  const badSale = state.badStock > 0 && (goodStock <= 0 || Math.random() < 0.38);
   if (badSale) {
     sellBadFish();
     return;
   }
 
-  state.stock -= 1;
+  const goldSale = state.goldStock > 0 && (state.stock <= 0 || Math.random() < 0.68);
+  if (goldSale) {
+    state.goldStock -= 1;
+    state.customer.goldSold += 1;
+  } else {
+    state.stock -= 1;
+    state.customer.goodSold += 1;
+  }
   state.customer.need -= 1;
   state.customer.buyCooldown = 0.22;
-  const sale = 120 + state.combo * 7;
+  const sale = (goldSale ? 190 : 120) + state.combo * (goldSale ? 10 : 7);
   state.score += sale;
   popText(`+${sale}`, 300, 190, "#fff438");
+  gainReputation(goldSale ? 5 : 1, goldSale ? "평판+5" : "평판+1");
   beep("coin");
 
   if (state.customer.need <= 0) {
     const tip = Math.round((state.customer.patience / state.customer.maxPatience) * 90);
+    const praise = state.customer.goldSold > 0;
+    const repBonus = praise ? 5 + state.customer.goldSold * 2 : 3;
+    const praiseLines = ["와 최고!", "황금이다!", "또 올게!"];
     state.score += tip;
     state.served += state.customer.want;
-    state.life = Math.min(100, state.life + 3);
+    gainReputation(repBonus, praise ? `평판+${repBonus}` : "평판+3");
     state.combo += 1;
     state.bestCombo = Math.max(state.bestCombo, state.combo);
-    state.message = "판매!";
+    state.message = praise ? praiseLines[Math.floor(Math.random() * praiseLines.length)] : "판매!";
     state.messageT = 0.55;
     state.customer = null;
     state.customerWait = customerDelay();
-    beep("perfect");
+    beep(praise ? "gold" : "perfect");
   } else {
-    state.message = `${state.customer.need}개더`;
+    state.message = goldSale ? `맛있다 ${state.customer.need}개` : `${state.customer.need}개더`;
     state.messageT = 0.45;
+  }
+}
+
+function gainReputation(amount, label) {
+  const before = state.life;
+  state.life = Math.min(100, state.life + amount);
+  if (state.life > before) {
+    popText(label, 286, 216, "#25c66a");
   }
 }
 
@@ -505,7 +534,7 @@ function drawTop() {
   bubble(238, 86, 128, 76, "#1c1c1c");
   text("SCORE", 270, 114, "#ffe438", 15, "bold");
   text(scoreText(state.score), 257, 147, "#ffffff", 28, "bold");
-  drawLifeGauge(286, 166);
+  drawLifeGauge(278, 36);
   drawBomb(34, 123);
   text(`COMBO ${state.combo}`, 22, 196, "#ffffff", 17, "bold", "#0a3d82");
   drawDifficultyBadge();
@@ -522,7 +551,7 @@ function drawLifeGauge(x, y) {
   const ratio = Math.max(0, state.life / 100);
   rect(x, y, 88, 33, "#ffffff");
   lineRect(x, y, 88, 33, "#2a496d", 3);
-  text("평판", x + 7, y + 16, "#1b2a42", 13, "bold");
+  text(`평판 ${Math.round(state.life)}`, x + 7, y + 16, "#1b2a42", 13, "bold");
   rect(x + 7, y + 20, 74, 7, "#202735");
   rect(x + 9, y + 22, 70 * ratio, 3, ratio < 0.3 ? "#ff2d1f" : ratio < 0.62 ? "#fff438" : "#25c66a");
 }
@@ -608,15 +637,19 @@ function drawBottom() {
   lineRect(PUMP_BUTTON.x, PUMP_BUTTON.y + down, PUMP_BUTTON.w, PUMP_BUTTON.h, state.fire > 0.6 ? "#ff3a25" : "#fff438", 3);
   text("펌핑!", PUMP_BUTTON.x + 16, PUMP_BUTTON.y + 33 + down, "#fff438", 23, "bold");
   text("화력증가!", PUMP_BUTTON.x + 101, PUMP_BUTTON.y + 34 + down, "#ff2d1f", 27, "bold", "#fff438");
-  for (let i = 0; i < Math.min(7, state.stock); i += 1) {
-    drawTinyFish(16 + i * 15, 786, "#ffc928");
+  for (let i = 0; i < Math.min(6, state.goldStock); i += 1) {
+    drawTinyFish(16 + i * 14, 784, "#ffef35");
+  }
+  for (let i = 0; i < Math.min(6, state.stock); i += 1) {
+    drawTinyFish(16 + i * 14, 807, "#ffc928");
   }
   for (let i = 0; i < Math.min(5, state.badStock); i += 1) {
-    drawTinyFish(16 + i * 15, 817, "#292929");
+    drawTinyFish(16 + i * 14, 830, "#292929");
   }
-  text(`정상 ${state.stock}`, 120, 796, "#ffffff", 17, "bold");
-  text(`불량 ${state.badStock}`, 120, 825, "#ff6b4a", 17, "bold", "#141414");
-  text(`판매 ${state.served}`, 292, 806, "#fff438", 18, "bold");
+  text(`황금 ${state.goldStock}`, 110, 791, "#fff438", 16, "bold", "#141414");
+  text(`정상 ${state.stock}`, 110, 814, "#ffffff", 16, "bold");
+  text(`불량 ${state.badStock}`, 110, 837, "#ff6b4a", 16, "bold", "#141414");
+  text(`판매 ${state.served}`, 286, 814, "#fff438", 18, "bold");
 }
 
 function drawBoost() {
@@ -1174,7 +1207,7 @@ async function showScores() {
 }
 
 function showHowTo() {
-  menuInfo.textContent = "철판 칸 터치: 반죽 > 뒤집기 > 꺼내기\n펌핑 버튼: 화력 증가\n시간제한은 없고 손님은 점점 몰려와. 불량이 섞이고 평판 20 이하가 되면 게임오버.";
+  menuInfo.textContent = "철판 칸 터치: 반죽 > 뒤집기 > 꺼내기\n펌핑 버튼: 화력 증가\n황금 붕어빵을 팔면 칭찬받고 평판이 올라가. 불량이 섞이고 평판 20 이하가 되면 게임오버.";
 }
 
 function saveLocalScore(record) {
