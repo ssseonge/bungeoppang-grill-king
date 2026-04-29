@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>붕어빵 굽기왕</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="stage" aria-label="붕어빵 굽기왕">
+      <canvas id="game" width="390" height="844" aria-label="모바일 붕어빵 게임 화면"></canvas>
+      <section id="menuOverlay" class="menu-overlay" aria-label="게임 메뉴">
+        <div class="menu-card">
+          <div class="menu-title">
+            <span>붕어빵</span>
+            <strong>굽기왕</strong>
+          </div>
+          <p class="menu-copy">펌프질로 화력을 살리고, 손님 놓치기 전에 붕어빵을 구워봐.</p>
+
+          <label class="name-field" for="playerName">
+            이름
+            <input id="playerName" type="text" maxlength="10" autocomplete="nickname" placeholder="이름 입력" />
+          </label>
+
+          <div class="menu-actions">
+            <button id="startButton" type="button">장사 시작</button>
+            <button id="saveNameButton" type="button">이름 저장</button>
+            <button id="scoresButton" type="button">내 기록</button>
+            <button id="howButton" type="button">조작법</button>
+          </div>
+
+          <div id="menuInfo" class="menu-info" aria-live="polite"></div>
+        </div>
+      </section>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>
